@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@libsql/client": "^0.17.4",
+    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "pg": "^8.22.0"
   }

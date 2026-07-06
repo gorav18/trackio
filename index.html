@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Trackio — Smart Expense Tracker</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
 :root {
   --bg:      #07091A;
@@ -826,6 +827,25 @@ let txType = 'expense';
 let selCat = 'food';
 let dashFilter = 'all';
 let allFilter  = 'all';
+let supabase = null;
+
+// Initialize Supabase Client
+async function initSupabase() {
+  try {
+    const res = await fetch('/api/config');
+    const config = await res.json();
+    if (!config.supabaseUrl || !config.supabaseAnonKey) {
+      console.error('Supabase config is missing. Please check your .env file or Vercel environment variables.');
+      showToast('Config Error: Supabase keys missing', 'err');
+      return false;
+    }
+    supabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
+    return true;
+  } catch (e) {
+    console.error('Failed to load Supabase config', e);
+    return false;
+  }
+}
 
 /* ══════════════════════════════════════
    AUTH
@@ -846,19 +866,27 @@ function showAuthErr(msg) {
 function clearAuthErr() { document.getElementById('auth-err').classList.add('hidden'); }
 
 async function handleLogin() {
-  const u = document.getElementById('l-user').value.trim();
+  const u = document.getElementById('l-user').value.trim().toLowerCase();
   const p = document.getElementById('l-pass').value;
   if(!u||!p) return showAuthErr('Please fill all fields.');
+  
+  if (!supabase) {
+    const initialized = await initSupabase();
+    if (!initialized) return showAuthErr('Supabase not initialized.');
+  }
+
   try {
-    const res = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: u, password: p })
+    const email = `${u}@trackio.com`;
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email,
+      password: p
     });
-    const data = await res.json();
-    if (!res.ok) return showAuthErr(data.error || 'Login failed.');
+    
+    if (error) return showAuthErr(error.message);
+    
     CU = u;
-    initApp(data.name);
+    const name = data.user.user_metadata.name || u;
+    initApp(name);
   } catch (e) {
     showAuthErr('Network error. Please try again.');
   }
@@ -874,26 +902,40 @@ async function handleSignup() {
   if(!/^[a-z0-9_]+$/.test(u)) return showAuthErr('Username: only lowercase letters, numbers, underscores.');
   if(p.length<6) return showAuthErr('Password must be at least 6 characters.');
   if(p!==c) return showAuthErr('Passwords do not match.');
+  
+  if (!supabase) {
+    const initialized = await initSupabase();
+    if (!initialized) return showAuthErr('Supabase not initialized.');
+  }
+
   try {
-    const res = await fetch('/api/auth/signup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: u, password: p, name })
+    const email = `${u}@trackio.com`;
+    const { data, error } = await supabase.auth.signUp({
+      email: email,
+      password: p,
+      options: {
+        data: {
+          name: name
+        }
+      }
     });
-    const data = await res.json();
-    if (!res.ok) return showAuthErr(data.error || 'Signup failed.');
+    
+    if (error) return showAuthErr(error.message);
+    
     CU = u;
-    initApp(data.name);
+    initApp(name);
   } catch (e) {
     showAuthErr('Network error. Please try again.');
   }
 }
 
 async function handleLogout() {
-  try {
-    await fetch('/api/auth/logout', { method: 'POST' });
-  } catch (e) {
-    console.error('Logout API failed', e);
+  if (supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
   }
   CU=null;
   document.getElementById('app-screen').classList.add('hidden');
@@ -926,15 +968,15 @@ async function changePassword() {
     return;
   }
   
+  if (!supabase) return;
+  
   try {
-    const res = await fetch('/api/auth/change-password', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ currentPassword: curr, newPassword: newP })
+    const { error } = await supabase.auth.updateUser({
+      password: newP
     });
-    const data = await res.json();
-    if (!res.ok) {
-      errEl.textContent = data.error || 'Failed to update password.';
+    
+    if (error) {
+      errEl.textContent = error.message;
       errEl.classList.remove('hidden');
       return;
     }
@@ -1044,7 +1086,9 @@ async function saveTx() {
   if(!date)          { errEl.textContent='Pick a date.';          errEl.classList.remove('hidden'); return; }
   errEl.classList.add('hidden');
   const cat = CATS.find(c=>c.id===selCat);
+  
   const txData = {
+    username: CU,
     type: txType,
     amount: amt,
     desc,
@@ -1055,25 +1099,28 @@ async function saveTx() {
     catLabel: cat.label,
     catColor: cat.color
   };
+  
+  if (!supabase) return;
+  
   try {
-    let res;
+    let error;
     if (editTxId) {
-      res = await fetch('/api/transactions/' + editTxId, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(txData)
-      });
+      const { error: err } = await supabase
+        .from('transactions')
+        .update(txData)
+        .eq('id', editTxId)
+        .eq('username', CU);
+      error = err;
     } else {
-      res = await fetch('/api/transactions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(txData)
-      });
+      txData.id = Date.now().toString();
+      const { error: err } = await supabase
+        .from('transactions')
+        .insert([txData]);
+      error = err;
     }
     
-    if (!res.ok) {
-      const errData = await res.json();
-      errEl.textContent = errData.error || 'Failed to save transaction.';
+    if (error) {
+      errEl.textContent = error.message;
       errEl.classList.remove('hidden');
       return;
     }
@@ -1088,20 +1135,26 @@ async function saveTx() {
 }
 
 async function editTx(id) {
+  if (!supabase) return;
   try {
-    const res = await fetch('/api/transactions/' + id);
-    if (!res.ok) return showToast('Failed to fetch transaction details.', 'err');
-    const tx = await res.json();
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('id', id)
+      .eq('username', CU)
+      .single();
+      
+    if (error || !data) return showToast('Failed to fetch transaction details.', 'err');
     
-    editTxId = tx.id;
-    txType = tx.type;
-    selCat = tx.catId;
+    editTxId = data.id;
+    txType = data.type;
+    selCat = data.catId;
     
     // Update modal inputs
-    document.getElementById('m-amt').value = tx.amount;
-    document.getElementById('m-desc').value = tx.desc;
-    document.getElementById('m-date').value = tx.date;
-    document.getElementById('m-mode').value = tx.mode;
+    document.getElementById('m-amt').value = data.amount;
+    document.getElementById('m-desc').value = data.desc;
+    document.getElementById('m-date').value = data.date;
+    document.getElementById('m-mode').value = data.mode;
     
     // Update UI elements
     document.querySelector('.modal-h h3').textContent = 'Edit Transaction';
@@ -1117,11 +1170,15 @@ async function editTx(id) {
 }
 
 async function delTx(id) {
+  if (!supabase) return;
   try {
-    const res = await fetch('/api/transactions/' + id, {
-      method: 'DELETE'
-    });
-    if (!res.ok) throw new Error('Delete failed');
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', id)
+      .eq('username', CU);
+      
+    if (error) throw error;
     showToast('🗑 Deleted', 'err');
     refreshAll();
   } catch (e) {
@@ -1145,17 +1202,17 @@ function fmtDate(d) { return new Date(d).toLocaleDateString('en-IN',{day:'numeri
    RENDER
 ══════════════════════════════════════ */
 async function refreshAll() {
-  if(!CU) return;
+  if(!CU || !supabase) return;
   try {
-    const res = await fetch('/api/transactions');
-    if (!res.ok) {
-      if (res.status === 401) {
-        handleLogout();
-      }
-      return;
-    }
-    const txs = await res.json();
-    const st  = getStats(txs);
+    const { data: txs, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('username', CU)
+      .order('id', { ascending: false });
+      
+    if (error) throw error;
+    
+    const st  = getStats(txs || []);
     document.getElementById('s-bal').textContent = (st.bal<0?'-':'')+fmt(st.bal);
     document.getElementById('s-inc').textContent = fmt(st.inc);
     document.getElementById('s-exp').textContent = fmt(st.exp);
@@ -1451,16 +1508,21 @@ window.addEventListener('resize', ()=>{
   rTimer=setTimeout(()=>{if(CU) refreshAll();}, 200);
 });
 
+// Startup AUTO SESSION check and Supabase initialization
 (async function() {
-  try {
-    const res = await fetch('/api/auth/session');
-    if (res.ok) {
-      const data = await res.json();
-      CU = data.username;
-      initApp(data.name);
+  const initialized = await initSupabase();
+  if (initialized && supabase) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session && session.user) {
+        const email = session.user.email;
+        CU = email.split('@')[0];
+        const name = session.user.user_metadata.name || CU;
+        initApp(name);
+      }
+    } catch (e) {
+      console.error('Session check failed', e);
     }
-  } catch (e) {
-    console.error('Session check failed', e);
   }
 })();
 </script>
