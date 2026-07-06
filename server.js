@@ -1,5 +1,6 @@
 const express = require('express');
 const { createClient } = require('@libsql/client');
+const { Pool } = require('pg');
 const crypto = require('node:crypto');
 const path = require('path');
 const os = require('node:os');
@@ -7,46 +8,108 @@ const os = require('node:os');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize SQLite/libSQL database client
-// Locally: uses file:database.db
-// Vercel (production): uses process.env.TURSO_DATABASE_URL to persist data in the cloud,
-// preventing data loss when serverless functions spin down or refresh.
-const dbUrl = process.env.VERCEL
-  ? (process.env.TURSO_DATABASE_URL || 'file:/tmp/database.db')
-  : (process.env.TURSO_DATABASE_URL || 'file:database.db');
-const dbAuthToken = process.env.TURSO_AUTH_TOKEN;
+// Initialize Database Connection
+// Trackio automatically supports three databases:
+// 1. Vercel Postgres (via process.env.POSTGRES_URL - 1-click persistent storage on Vercel)
+// 2. Turso cloud SQLite (via process.env.TURSO_DATABASE_URL & TURSO_AUTH_TOKEN)
+// 3. Local SQLite file (fallback to file:database.db or file:/tmp/database.db)
+let dbType = 'sqlite'; // 'sqlite' or 'postgres'
+let dbClient = null;
 
-const db = createClient({
-  url: dbUrl,
-  authToken: dbAuthToken
-});
+if (process.env.POSTGRES_URL) {
+  dbType = 'postgres';
+  dbClient = new Pool({
+    connectionString: process.env.POSTGRES_URL,
+    ssl: { rejectUnauthorized: false } // Required for Vercel Postgres serverless connections
+  });
+  console.log('Database: Using Vercel Postgres (persistent cloud storage)');
+} else {
+  dbType = 'sqlite';
+  const dbUrl = process.env.VERCEL
+    ? (process.env.TURSO_DATABASE_URL || 'file:/tmp/database.db')
+    : (process.env.TURSO_DATABASE_URL || 'file:database.db');
+  const dbAuthToken = process.env.TURSO_AUTH_TOKEN;
+
+  dbClient = createClient({
+    url: dbUrl,
+    authToken: dbAuthToken
+  });
+  console.log(`Database: Using SQLite/libSQL at ${dbUrl}`);
+}
+
+// Unified Database Execution wrapper
+// Automatically translates SQL syntax placeholders from ? (SQLite) to $1, $2... (PostgreSQL)
+async function dbExecute(sql, args = []) {
+  if (dbType === 'postgres') {
+    let count = 0;
+    const pgSql = sql.replace(/\?/g, () => {
+      count++;
+      return `$${count}`;
+    });
+    const result = await dbClient.query(pgSql, args);
+    return {
+      rows: result.rows,
+      rowsAffected: result.rowCount
+    };
+  } else {
+    const result = await dbClient.execute({ sql, args });
+    return result;
+  }
+}
 
 // Create tables asynchronously
 async function initDb() {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      username TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      password TEXT NOT NULL
-    )
-  `);
+  if (dbType === 'postgres') {
+    await dbExecute(`
+      CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(255) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        password VARCHAR(255) NOT NULL
+      )
+    `);
 
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS transactions (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      type TEXT NOT NULL,
-      amount REAL NOT NULL,
-      desc TEXT NOT NULL,
-      date TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      catId TEXT NOT NULL,
-      catEmoji TEXT NOT NULL,
-      catLabel TEXT NOT NULL,
-      catColor TEXT NOT NULL,
-      FOREIGN KEY(username) REFERENCES users(username)
-    )
-  `);
+    await dbExecute(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        id VARCHAR(255) PRIMARY KEY,
+        username VARCHAR(255) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        amount DOUBLE PRECISION NOT NULL,
+        "desc" TEXT NOT NULL,
+        date VARCHAR(50) NOT NULL,
+        mode VARCHAR(50) NOT NULL,
+        catId VARCHAR(100) NOT NULL,
+        catEmoji VARCHAR(50) NOT NULL,
+        catLabel VARCHAR(100) NOT NULL,
+        catColor VARCHAR(50) NOT NULL,
+        FOREIGN KEY(username) REFERENCES users(username)
+      )
+    `);
+  } else {
+    await dbExecute(`
+      CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        password TEXT NOT NULL
+      )
+    `);
+
+    await dbExecute(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL,
+        type TEXT NOT NULL,
+        amount REAL NOT NULL,
+        desc TEXT NOT NULL,
+        date TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        catId TEXT NOT NULL,
+        catEmoji TEXT NOT NULL,
+        catLabel TEXT NOT NULL,
+        catColor TEXT NOT NULL,
+        FOREIGN KEY(username) REFERENCES users(username)
+      )
+    `);
+  }
 }
 initDb().catch(err => {
   console.error('Database tables initialization failed:', err);
@@ -114,20 +177,13 @@ app.post('/api/auth/signup', express.json(), async (req, res) => {
   }
   
   try {
-    const existing = await db.execute({
-      sql: 'SELECT username FROM users WHERE username = ?',
-      args: [uLower]
-    });
+    const existing = await dbExecute('SELECT username FROM users WHERE username = ?', [uLower]);
     if (existing.rows.length > 0) {
       return res.status(400).json({ error: 'Username already taken. Choose another.' });
     }
     
     const hashedPassword = hashPassword(password);
-    
-    await db.execute({
-      sql: 'INSERT INTO users (username, name, password) VALUES (?, ?, ?)',
-      args: [uLower, name.trim(), hashedPassword]
-    });
+    await dbExecute('INSERT INTO users (username, name, password) VALUES (?, ?, ?)', [uLower, name.trim(), hashedPassword]);
     
     // Create session
     const token = crypto.randomBytes(32).toString('hex');
@@ -150,10 +206,7 @@ app.post('/api/auth/login', express.json(), async (req, res) => {
   const uLower = username.trim().toLowerCase();
   
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT * FROM users WHERE username = ?',
-      args: [uLower]
-    });
+    const userRes = await dbExecute('SELECT * FROM users WHERE username = ?', [uLower]);
     const user = userRes.rows[0];
     if (!user) {
       return res.status(400).json({ error: 'Account not found. Please sign up first.' });
@@ -190,10 +243,7 @@ app.get('/api/auth/session', async (req, res) => {
     return res.status(401).json({ error: 'No active session' });
   }
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT name FROM users WHERE username = ?',
-      args: [req.username]
-    });
+    const userRes = await dbExecute('SELECT name FROM users WHERE username = ?', [req.username]);
     const user = userRes.rows[0];
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
@@ -216,10 +266,7 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
   }
   
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT password FROM users WHERE username = ?',
-      args: [req.username]
-    });
+    const userRes = await dbExecute('SELECT password FROM users WHERE username = ?', [req.username]);
     const user = userRes.rows[0];
     if (!user) {
       return res.status(400).json({ error: 'User not found.' });
@@ -230,10 +277,7 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
     }
     
     const hashedNew = hashPassword(newPassword);
-    await db.execute({
-      sql: 'UPDATE users SET password = ? WHERE username = ?',
-      args: [hashedNew, req.username]
-    });
+    await dbExecute('UPDATE users SET password = ? WHERE username = ?', [hashedNew, req.username]);
     
     res.json({ success: true });
   } catch (e) {
@@ -245,10 +289,7 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
 // Get transactions
 app.get('/api/transactions', requireAuth, async (req, res) => {
   try {
-    const txRes = await db.execute({
-      sql: 'SELECT * FROM transactions WHERE username = ? ORDER BY id DESC',
-      args: [req.username]
-    });
+    const txRes = await dbExecute('SELECT * FROM transactions WHERE username = ? ORDER BY id DESC', [req.username]);
     res.json(txRes.rows);
   } catch (e) {
     console.error('Get transactions error:', e);
@@ -259,10 +300,7 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
 // Get single transaction details
 app.get('/api/transactions/:id', requireAuth, async (req, res) => {
   try {
-    const txRes = await db.execute({
-      sql: 'SELECT * FROM transactions WHERE id = ? AND username = ?',
-      args: [req.params.id, req.username]
-    });
+    const txRes = await dbExecute('SELECT * FROM transactions WHERE id = ? AND username = ?', [req.params.id, req.username]);
     const row = txRes.rows[0];
     if (!row) {
       return res.status(404).json({ error: 'Transaction not found' });
@@ -283,11 +321,11 @@ app.post('/api/transactions', requireAuth, express.json(), async (req, res) => {
   const id = Date.now().toString();
   
   try {
-    await db.execute({
-      sql: `INSERT INTO transactions (id, username, type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, req.username, type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor]
-    });
+    await dbExecute(
+      `INSERT INTO transactions (id, username, type, amount, "desc", date, mode, catId, catEmoji, catLabel, catColor)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [id, req.username, type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor]
+    );
     res.json({ success: true, id });
   } catch (e) {
     console.error('Create transaction error:', e);
@@ -303,12 +341,12 @@ app.put('/api/transactions/:id', requireAuth, express.json(), async (req, res) =
   }
   
   try {
-    const info = await db.execute({
-      sql: `UPDATE transactions
-            SET type = ?, amount = ?, desc = ?, date = ?, mode = ?, catId = ?, catEmoji = ?, catLabel = ?, catColor = ?
-            WHERE id = ? AND username = ?`,
-      args: [type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor, req.params.id, req.username]
-    });
+    const info = await dbExecute(
+      `UPDATE transactions
+       SET type = ?, amount = ?, "desc" = ?, date = ?, mode = ?, catId = ?, catEmoji = ?, catLabel = ?, catColor = ?
+       WHERE id = ? AND username = ?`,
+      [type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor, req.params.id, req.username]
+    );
     
     if (info.rowsAffected === 0) {
       return res.status(404).json({ error: 'Transaction not found or unauthorized.' });
@@ -323,10 +361,7 @@ app.put('/api/transactions/:id', requireAuth, express.json(), async (req, res) =
 // Delete transaction
 app.delete('/api/transactions/:id', requireAuth, async (req, res) => {
   try {
-    const info = await db.execute({
-      sql: 'DELETE FROM transactions WHERE id = ? AND username = ?',
-      args: [req.params.id, req.username]
-    });
+    const info = await dbExecute('DELETE FROM transactions WHERE id = ? AND username = ?', [req.params.id, req.username]);
     if (info.rowsAffected === 0) {
       return res.status(404).json({ error: 'Transaction not found or unauthorized.' });
     }
