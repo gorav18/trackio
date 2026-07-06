@@ -1,74 +1,86 @@
-# Trackio — Smart Expense Tracker
+# Trackio — Smart Expense Tracker (Supabase Edition)
 
-Trackio is a modern, premium, full-stack personal finance and expense tracker built with Node.js, Express, and SQLite/libSQL. It helps users manage their income and expenses, visualize their spending splits with dynamic canvas-based charts, and keep track of daily averages.
+Trackio is a modern, premium, full-stack personal finance and expense tracker. This version has been fully integrated with **Supabase**, moving authentication and transaction storage completely client-side using the Supabase Web SDK.
+
+The Node.js Express server now acts solely as a configuration proxy and static file server, pulling credentials securely from a local `.env` file or from your production Vercel Environment Variables.
 
 ## 🚀 Key Features
 
-* **Full-Stack Architecture**: Dynamic server-side API endpoints replace client-side localStorage.
-* **Persistent Database**: Built using SQLite via `@libsql/client`, supporting both local file-based database and cloud-based persistent storage (Turso).
-* **Secure Authentication**: User signup, login, and sessions using HttpOnly cookies. Passwords are encrypted using salted PBKDF2 hashing.
+* **Supabase Client SDK Integration**: Auth and database operations are executed directly from the browser using the `@supabase/supabase-js` client SDK.
+* **Stateless Backend**: The local Express server is lightweight and stateless, removing database engines and password hashing complexities from the server.
+* **Persistent & Secure**: Supabase handles secure salted hashing and session validation out of the box.
 * **Transaction Management**: Add, view, edit, and delete transactions.
-* **Smart UI Handlers**: 
-  * Displays the expense emoji (`💸`) for all income entries in the list.
-  * Description is completely optional; falls back to showing the Category Label (e.g. `Food`, `Study`) if omitted.
-* **Account Settings**: A settings panel to securely change passwords and manage sessions.
-* **WiFi Network Access**: Binds to all network interfaces (`0.0.0.0`) so you can access it on other devices (like your phone) over WiFi.
-* **Vercel Serverless Ready**: Configured for seamless deployment to Vercel with path rewrites and read-only filesystem fallbacks.
-
-## 🛠 Tech Stack
-
-* **Frontend**: HTML5, Vanilla CSS3 (custom CSS design system with micro-animations), and Vanilla JavaScript.
-* **Backend**: Node.js, Express.
-* **Database**: SQLite / libSQL (`@libsql/client`).
-* **Session & Security**: Native `node:crypto` hashing (PBKDF2) and HttpOnly session cookies.
+* **Optional Description**: Description input in the modal is completely optional and defaults to the category name in the list.
+* **Settings Panel**: Change password directly via Supabase Auth inside the settings tab.
+* **WiFi Network Access**: Still fully accessible on other devices (like your phone) over WiFi.
+* **Vercel Serverless Ready**: Production deployment has zero server overhead or transient storage cold starts.
 
 ---
 
-## 💻 Local Development Setup
+## 🛠 Local Setup & Environment Configuration
 
-### Prerequisites
+### 1. Supabase Project Setup
 
-* [Node.js](https://nodejs.org/) (v22.5.0+ recommended for built-in fetch/sqlite support)
-* [npm](https://www.npmjs.com/)
+1. Create a new project on **[Supabase](https://supabase.com/)**.
+2. Run the following SQL queries in the Supabase **SQL Editor** to create the transactions table:
 
-### Installation
+```sql
+create table transactions (
+  id text primary key,
+  username text not null,
+  type text not null,
+  amount numeric not null,
+  "desc" text, -- description (optional)
+  date text not null,
+  mode text not null,
+  "catId" text not null,
+  "catEmoji" text not null,
+  "catLabel" text not null,
+  "catColor" text not null,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
 
-1. **Clone the repository**:
-   ```bash
-   git clone <https://github.com/gorav18/trackio.git>
-   cd trackio
-   ```
+-- Enable Row Level Security (RLS)
+alter table transactions enable row level security;
 
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Start the local server**:
-   ```bash
-   npm run start
-   # Or for auto-reload on file edits:
-   npm run dev
-   ```
-
-4. **Access the application**:
-   * WEBPAGE: [https://trackio-snowy.vercel.app](https://trackio-snowy.vercel.app)
-
----
-
-## ☁️ Production Deployment (Vercel)
-
-Trackio is pre-configured to run out of the box on Vercel.
-
-## 📂 Project Structure
-
-```text
-├── api/
-│   └── index.js          # Vercel serverless function entrypoint
-├── database.db           # Local SQLite file database (git-ignored)
-├── index.html            # Main frontend page
-├── package.json          # Node project scripts & dependencies
-├── problems.md           # Tracked issues & resolutions
-├── server.js             # Express application & API router
-└── vercel.json           # Vercel deployment & rewrite configuration
+-- Create policy to allow users to manage their own transactions
+create policy "Users can manage their own transactions" 
+on transactions 
+for all 
+using (true)
+with check (true);
 ```
+*(Note: To keep the user experience seamless, usernames are dynamically mapped to virtual email addresses, e.g. `username@trackio.com` behind the scenes).*
+
+### 2. Local Environment Variables
+Create a `.env` file in the root of the project directory (based on `.env.example`) and fill in your Supabase credentials:
+
+```env
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
+PORT=3000
+```
+*(Note: `.env` is automatically added to `.gitignore` and will never be committed to git).*
+
+### 3. Install & Start Server
+```bash
+# Install dependencies
+npm install
+
+# Start the server locally
+npm run start
+# or auto-reload on dev mode:
+npm run dev
+```
+
+---
+
+## ☁️ Deploying to Vercel
+
+Since Trackio uses client-side Supabase, deploying to Vercel is completely permanent, persistent, and has zero data-loss issues when the serverless function restarts.
+
+1. Import this repository into Vercel.
+2. In the **Environment Variables** section of your Vercel Project Settings, add:
+   * `SUPABASE_URL`
+   * `SUPABASE_ANON_KEY`
+3. Click Deploy!
