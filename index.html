@@ -829,21 +829,151 @@ let dashFilter = 'all';
 let allFilter  = 'all';
 let supabase = null;
 
-// Initialize Supabase Client
+// Mock Supabase Client for offline demo testing using localStorage
+const mockSupabase = {
+  auth: {
+    async signUp({ email, password, options }) {
+      const u = email.split('@')[0];
+      const name = options?.data?.name || u;
+      
+      const users = JSON.parse(localStorage.getItem('mock_users') || '{}');
+      if (users[u]) {
+        return { data: null, error: { message: 'Username already taken.' } };
+      }
+      users[u] = { username: u, name: name, password: password };
+      localStorage.setItem('mock_users', JSON.stringify(users));
+      
+      const user = { email, user_metadata: { name } };
+      localStorage.setItem('mock_session', JSON.stringify({ user }));
+      return { data: { user }, error: null };
+    },
+    async signInWithPassword({ email, password }) {
+      const u = email.split('@')[0];
+      const users = JSON.parse(localStorage.getItem('mock_users') || '{}');
+      const user = users[u];
+      if (!user || user.password !== password) {
+        return { data: null, error: { message: 'Invalid login credentials.' } };
+      }
+      const userData = { email, user_metadata: { name: user.name } };
+      localStorage.setItem('mock_session', JSON.stringify({ user: userData }));
+      return { data: { user: userData }, error: null };
+    },
+    async signOut() {
+      localStorage.removeItem('mock_session');
+      return { error: null };
+    },
+    async getSession() {
+      const sess = localStorage.getItem('mock_session');
+      return { data: { session: sess ? JSON.parse(sess) : null } };
+    },
+    async updateUser({ password }) {
+      const sess = JSON.parse(localStorage.getItem('mock_session') || '{}');
+      if (sess.user) {
+        const u = sess.user.email.split('@')[0];
+        const users = JSON.parse(localStorage.getItem('mock_users') || '{}');
+        if (users[u]) {
+          users[u].password = password;
+          localStorage.setItem('mock_users', JSON.stringify(users));
+          return { error: null };
+        }
+      }
+      return { error: { message: 'User not found.' } };
+    }
+  },
+  from(table) {
+    return {
+      select() {
+        return {
+          eq(col, val) {
+            return {
+              order(ordCol, { ascending }) {
+                let txs = JSON.parse(localStorage.getItem('mock_txs') || '[]');
+                txs = txs.filter(t => t[col] === val);
+                txs.sort((a,b) => {
+                  const valA = a[ordCol] || '';
+                  const valB = b[ordCol] || '';
+                  return ascending ? valA.localeCompare(valB) : valB.localeCompare(valA);
+                });
+                return { data: txs, error: null };
+              },
+              single() {
+                let txs = JSON.parse(localStorage.getItem('mock_txs') || '[]');
+                const tx = txs.find(t => t[col] === val);
+                return { data: tx || null, error: tx ? null : { message: 'Not found' } };
+              }
+            };
+          }
+        };
+      },
+      insert(arr) {
+        const txs = JSON.parse(localStorage.getItem('mock_txs') || '[]');
+        txs.push(...arr);
+        localStorage.setItem('mock_txs', JSON.stringify(txs));
+        return { error: null };
+      },
+      update(obj) {
+        return {
+          eq(col1, val1) {
+            return {
+              eq(col2, val2) {
+                let txs = JSON.parse(localStorage.getItem('mock_txs') || '[]');
+                const idx = txs.findIndex(t => t[col1] === val1 && t[col2] === val2);
+                if (idx !== -1) {
+                  txs[idx] = { ...txs[idx], ...obj };
+                  localStorage.setItem('mock_txs', JSON.stringify(txs));
+                  return { error: null };
+                }
+                return { error: { message: 'Not found' } };
+              }
+            };
+          }
+        };
+      },
+      delete() {
+        return {
+          eq(col1, val1) {
+            return {
+              eq(col2, val2) {
+                let txs = JSON.parse(localStorage.getItem('mock_txs') || '[]');
+                const filtered = txs.filter(t => !(t[col1] === val1 && t[col2] === val2));
+                localStorage.setItem('mock_txs', JSON.stringify(filtered));
+                return { error: null };
+              }
+            };
+          }
+        };
+      }
+    };
+  }
+};
+
+// Initialize Supabase Client (falls back to mockSupabase if keys are missing/demo)
 async function initSupabase() {
   try {
     const res = await fetch('/api/config');
     const config = await res.json();
-    if (!config.supabaseUrl || !config.supabaseAnonKey) {
-      console.error('Supabase config is missing. Please check your .env file or Vercel environment variables.');
-      showToast('Config Error: Supabase keys missing', 'err');
-      return false;
+    
+    if (!config.supabaseUrl || !config.supabaseAnonKey || config.supabaseUrl.includes('demo-project')) {
+      console.warn('Demo Mode: Using mock localStorage database.');
+      supabase = mockSupabase;
+      showToast('⚠️ Demo Mode: Local Storage', 'success');
+      return true;
     }
+
+    if (!window.supabase) {
+      console.warn('Supabase CDN not loaded. Falling back to local storage mock.');
+      supabase = mockSupabase;
+      showToast('⚠️ Demo Mode: Local Storage', 'success');
+      return true;
+    }
+
     supabase = window.supabase.createClient(config.supabaseUrl, config.supabaseAnonKey);
     return true;
   } catch (e) {
-    console.error('Failed to load Supabase config', e);
-    return false;
+    console.warn('Initialization error. Falling back to local storage mock.', e);
+    supabase = mockSupabase;
+    showToast('⚠️ Demo Mode: Local Storage', 'success');
+    return true;
   }
 }
 
