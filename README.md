@@ -1,86 +1,85 @@
-# Trackio — Smart Expense Tracker (Supabase Edition)
+# Trackio — Smart Expense Tracker (FastAPI & Supabase Edition)
 
-Trackio is a modern, premium, full-stack personal finance and expense tracker. This version has been fully integrated with **Supabase**, moving authentication and transaction storage completely client-side using the Supabase Web SDK.
-
-The Node.js Express server now acts solely as a configuration proxy and static file server, pulling credentials securely from a local `.env` file or from your production Vercel Environment Variables.
+Trackio is a modern, premium, full-stack personal finance and expense tracker. This version uses a **Python FastAPI** backend to act as a configuration proxy and serve static files, while authentication and transaction storage are managed client-side via the Supabase Web SDK.
 
 ## 🚀 Key Features
 
+* **Python FastAPI Backend**: Lightweight, high-performance Python ASGI backend serves the static single-page application (SPA) and config API.
 * **Supabase Client SDK Integration**: Auth and database operations are executed directly from the browser using the `@supabase/supabase-js` client SDK.
-* **Stateless Backend**: The local Express server is lightweight and stateless, removing database engines and password hashing complexities from the server.
-* **Persistent & Secure**: Supabase handles secure salted hashing and session validation out of the box.
-* **Transaction Management**: Add, view, edit, and delete transactions.
+* **Stateless Architecture**: No server-side SQL drivers or session stores needed; fully compatible with serverless environments.
 * **Optional Description**: Description input in the modal is completely optional and defaults to the category name in the list.
-* **Settings Panel**: Change password directly via Supabase Auth inside the settings tab.
-* **WiFi Network Access**: Still fully accessible on other devices (like your phone) over WiFi.
-* **Vercel Serverless Ready**: Production deployment has zero server overhead or transient storage cold starts.
+* **Account Settings**: Users can change passwords securely using Supabase Auth.
+* **WiFi Network Access**: Binds to all network interfaces (`0.0.0.0`) so you can access it on other devices (like your phone) over WiFi.
+* **Vercel Serverless Ready**: Natively configured for seamless Python deployments on Vercel.
+
+## 🛠 Tech Stack
+
+* **Frontend**: HTML5, Vanilla CSS3, and Vanilla JavaScript.
+* **Backend**: Python 3, FastAPI, Uvicorn.
+* **Database & Auth**: Supabase Web SDK.
 
 ---
 
-## 🛠 Local Setup & Environment Configuration
+## 💻 Local Development Setup
 
-### 1. Supabase Project Setup
+### Prerequisites
 
-1. Create a new project on **[Supabase](https://supabase.com/)**.
-2. Run the following SQL queries in the Supabase **SQL Editor** to create the transactions table:
+* Python 3.9+
+* pip
 
-```sql
-create table transactions (
-  id text primary key,
-  username text not null,
-  type text not null,
-  amount numeric not null,
-  "desc" text, -- description (optional)
-  date text not null,
-  mode text not null,
-  "catId" text not null,
-  "catEmoji" text not null,
-  "catLabel" text not null,
-  "catColor" text not null,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
-);
+### Installation
 
--- Enable Row Level Security (RLS)
-alter table transactions enable row level security;
+1. **Clone the repository**:
+   ```bash
+   git clone <your-repository-url>
+   cd trackio
+   ```
 
--- Create policy to allow users to manage their own transactions
-create policy "Users can manage their own transactions" 
-on transactions 
-for all 
-using (true)
-with check (true);
-```
-*(Note: To keep the user experience seamless, usernames are dynamically mapped to virtual email addresses, e.g. `username@trackio.com` behind the scenes).*
+2. **Install Python dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-### 2. Local Environment Variables
-Create a `.env` file in the root of the project directory (based on `.env.example`) and fill in your Supabase credentials:
+3. **Configure Environment Variables**:
+   Create a `.env` file in the root directory (copy from `.env.example`) and fill in your Supabase credentials:
+   ```env
+   SUPABASE_URL=your-supabase-url
+   SUPABASE_ANON_KEY=your-supabase-anon-key
+   ```
 
-```env
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your-supabase-anon-key
-PORT=3000
-```
-*(Note: `.env` is automatically added to `.gitignore` and will never be committed to git).*
+4. **Start the local development server**:
+   ```bash
+   python main.py
+   ```
 
-### 3. Install & Start Server
-```bash
-# Install dependencies
-npm install
-
-# Start the server locally
-npm run start
-# or auto-reload on dev mode:
-npm run dev
-```
+5. **Access the application**:
+   * Localhost: [http://localhost:3000](http://localhost:3000)
+   * Local Network / WiFi: The terminal will print your exact local IPv4 addresses (e.g. `http://192.168.x.x:3000`) for network access.
 
 ---
 
 ## ☁️ Deploying to Vercel
 
-Since Trackio uses client-side Supabase, deploying to Vercel is completely permanent, persistent, and has zero data-loss issues when the serverless function restarts.
+Trackio runs out of the box on Vercel's native Python serverless runtime.
 
 1. Import this repository into Vercel.
 2. In the **Environment Variables** section of your Vercel Project Settings, add:
    * `SUPABASE_URL`
    * `SUPABASE_ANON_KEY`
-3. Click Deploy!
+3. Click **Deploy**!
+
+---
+
+## 📂 Project Structure
+
+```text
+├── api/
+│   └── index.py          # FastAPI serverless function entrypoint
+├── .env                  # Local environment configurations (git-ignored)
+├── .env.example          # Environment variables template
+├── index.html            # Main frontend page
+├── main.py               # Local startup entry point for python
+├── problems.md           # Tracked issues & resolutions
+├── requirements.txt      # Python dependencies list
+└── vercel.json           # Vercel deployment & rewrite configuration
+```
