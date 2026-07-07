@@ -1,5 +1,5 @@
 const express = require('express');
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@supabase/supabase-js');
 const crypto = require('node:crypto');
 const path = require('path');
 const os = require('node:os');
@@ -7,50 +7,11 @@ const os = require('node:os');
 const app = express();
 const port = process.env.PORT || 3000;
 
-// Initialize SQLite/libSQL database client
-// Locally: uses file:database.db
-// Vercel (production): uses process.env.TURSO_DATABASE_URL to persist data in the cloud,
-// preventing data loss when serverless functions spin down or refresh.
-const dbUrl = process.env.VERCEL
-  ? (process.env.TURSO_DATABASE_URL || 'file:/tmp/database.db')
-  : (process.env.TURSO_DATABASE_URL || 'file:database.db');
-const dbAuthToken = process.env.TURSO_AUTH_TOKEN;
-
-const db = createClient({
-  url: dbUrl,
-  authToken: dbAuthToken
-});
-
-// Create tables asynchronously
-async function initDb() {
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      username TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      password TEXT NOT NULL
-    )
-  `);
-
-  await db.execute(`
-    CREATE TABLE IF NOT EXISTS transactions (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      type TEXT NOT NULL,
-      amount REAL NOT NULL,
-      desc TEXT NOT NULL,
-      date TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      catId TEXT NOT NULL,
-      catEmoji TEXT NOT NULL,
-      catLabel TEXT NOT NULL,
-      catColor TEXT NOT NULL,
-      FOREIGN KEY(username) REFERENCES users(username)
-    )
-  `);
-}
-initDb().catch(err => {
-  console.error('Database tables initialization failed:', err);
-});
+// Initialize Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 // Simple in-memory session store
 const sessions = new Map(); // token -> username
@@ -114,20 +75,38 @@ app.post('/api/auth/signup', express.json(), async (req, res) => {
   }
   
   try {
-    const existing = await db.execute({
-      sql: 'SELECT username FROM users WHERE username = ?',
-      args: [uLower]
-    });
-    if (existing.rows.length > 0) {
+    const { data: existing, error: existError } = await supabase
+      .from('users')
+      .select('username')
+      .eq('username', uLower);
+
+    if (existError) {
+      return res.status(500).json({
+        success: false,
+        message: existError.message
+      });
+    }
+
+    if (existing && existing.length > 0) {
       return res.status(400).json({ error: 'Username already taken. Choose another.' });
     }
     
     const hashedPassword = hashPassword(password);
     
-    await db.execute({
-      sql: 'INSERT INTO users (username, name, password) VALUES (?, ?, ?)',
-      args: [uLower, name.trim(), hashedPassword]
-    });
+    const { error: insertError } = await supabase
+      .from('users')
+      .insert({
+        username: uLower,
+        name: name.trim(),
+        password: hashedPassword
+      });
+
+    if (insertError) {
+      return res.status(500).json({
+        success: false,
+        message: insertError.message
+      });
+    }
     
     // Create session
     const token = crypto.randomBytes(32).toString('hex');
@@ -150,11 +129,19 @@ app.post('/api/auth/login', express.json(), async (req, res) => {
   const uLower = username.trim().toLowerCase();
   
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT * FROM users WHERE username = ?',
-      args: [uLower]
-    });
-    const user = userRes.rows[0];
+    const { data: users, error: loginError } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', uLower);
+
+    if (loginError) {
+      return res.status(500).json({
+        success: false,
+        message: loginError.message
+      });
+    }
+
+    const user = users && users[0];
     if (!user) {
       return res.status(400).json({ error: 'Account not found. Please sign up first.' });
     }
@@ -190,11 +177,19 @@ app.get('/api/auth/session', async (req, res) => {
     return res.status(401).json({ error: 'No active session' });
   }
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT name FROM users WHERE username = ?',
-      args: [req.username]
-    });
-    const user = userRes.rows[0];
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('name')
+      .eq('username', req.username);
+
+    if (userError) {
+      return res.status(500).json({
+        success: false,
+        message: userError.message
+      });
+    }
+
+    const user = users && users[0];
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
@@ -216,11 +211,19 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
   }
   
   try {
-    const userRes = await db.execute({
-      sql: 'SELECT password FROM users WHERE username = ?',
-      args: [req.username]
-    });
-    const user = userRes.rows[0];
+    const { data: users, error: userError } = await supabase
+      .from('users')
+      .select('password')
+      .eq('username', req.username);
+
+    if (userError) {
+      return res.status(500).json({
+        success: false,
+        message: userError.message
+      });
+    }
+
+    const user = users && users[0];
     if (!user) {
       return res.status(400).json({ error: 'User not found.' });
     }
@@ -230,10 +233,17 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
     }
     
     const hashedNew = hashPassword(newPassword);
-    await db.execute({
-      sql: 'UPDATE users SET password = ? WHERE username = ?',
-      args: [hashedNew, req.username]
-    });
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ password: hashedNew })
+      .eq('username', req.username);
+
+    if (updateError) {
+      return res.status(500).json({
+        success: false,
+        message: updateError.message
+      });
+    }
     
     res.json({ success: true });
   } catch (e) {
@@ -245,11 +255,20 @@ app.put('/api/auth/change-password', requireAuth, express.json(), async (req, re
 // Get transactions
 app.get('/api/transactions', requireAuth, async (req, res) => {
   try {
-    const txRes = await db.execute({
-      sql: 'SELECT * FROM transactions WHERE username = ? ORDER BY id DESC',
-      args: [req.username]
-    });
-    res.json(txRes.rows);
+    const { data: transactions, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('username', req.username)
+      .order('id', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    res.json(transactions);
   } catch (e) {
     console.error('Get transactions error:', e);
     res.status(500).json({ error: 'Database error' });
@@ -259,11 +278,20 @@ app.get('/api/transactions', requireAuth, async (req, res) => {
 // Get single transaction details
 app.get('/api/transactions/:id', requireAuth, async (req, res) => {
   try {
-    const txRes = await db.execute({
-      sql: 'SELECT * FROM transactions WHERE id = ? AND username = ?',
-      args: [req.params.id, req.username]
-    });
-    const row = txRes.rows[0];
+    const { data: transactions, error } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('username', req.username);
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    const row = transactions && transactions[0];
     if (!row) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
@@ -283,11 +311,29 @@ app.post('/api/transactions', requireAuth, express.json(), async (req, res) => {
   const id = Date.now().toString();
   
   try {
-    await db.execute({
-      sql: `INSERT INTO transactions (id, username, type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [id, req.username, type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor]
-    });
+    const { error } = await supabase
+      .from('transactions')
+      .insert({
+        id,
+        username: req.username,
+        type,
+        amount,
+        desc,
+        date,
+        mode,
+        catId,
+        catEmoji,
+        catLabel,
+        catColor
+      });
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+
     res.json({ success: true, id });
   } catch (e) {
     console.error('Create transaction error:', e);
@@ -303,14 +349,31 @@ app.put('/api/transactions/:id', requireAuth, express.json(), async (req, res) =
   }
   
   try {
-    const info = await db.execute({
-      sql: `UPDATE transactions
-            SET type = ?, amount = ?, desc = ?, date = ?, mode = ?, catId = ?, catEmoji = ?, catLabel = ?, catColor = ?
-            WHERE id = ? AND username = ?`,
-      args: [type, amount, desc, date, mode, catId, catEmoji, catLabel, catColor, req.params.id, req.username]
-    });
+    const { data, error } = await supabase
+      .from('transactions')
+      .update({
+        type,
+        amount,
+        desc,
+        date,
+        mode,
+        catId,
+        catEmoji,
+        catLabel,
+        catColor
+      })
+      .eq('id', req.params.id)
+      .eq('username', req.username)
+      .select();
     
-    if (info.rowsAffected === 0) {
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+    
+    if (!data || data.length === 0) {
       return res.status(404).json({ error: 'Transaction not found or unauthorized.' });
     }
     res.json({ success: true });
@@ -323,11 +386,21 @@ app.put('/api/transactions/:id', requireAuth, express.json(), async (req, res) =
 // Delete transaction
 app.delete('/api/transactions/:id', requireAuth, async (req, res) => {
   try {
-    const info = await db.execute({
-      sql: 'DELETE FROM transactions WHERE id = ? AND username = ?',
-      args: [req.params.id, req.username]
-    });
-    if (info.rowsAffected === 0) {
+    const { data, error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('username', req.username)
+      .select();
+
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        message: error.message
+      });
+    }
+
+    if (!data || data.length === 0) {
       return res.status(404).json({ error: 'Transaction not found or unauthorized.' });
     }
     res.json({ success: true });
